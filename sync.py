@@ -1,7 +1,6 @@
 import argparse
 from pathlib import Path
 from dataclasses import dataclass
-from datetime import datetime
 import time
 import sys
 import shutil
@@ -9,8 +8,10 @@ import os
 import logging
 import stat
 from enum import Enum
+import hashlib
 
 logger = logging.getLogger("sync")
+BUFF_SIZE = 1024 * 1024
 
 
 class FileKind(Enum):
@@ -18,13 +19,12 @@ class FileKind(Enum):
     FILE = "file"
     DIR = "dir"
     OTHER = "other"
-    NONE = None
 
 
 @dataclass
 class FileEntry:
     path: Path
-    kind: FileKind
+    kind: FileKind | None
 
 
 def setup_logger(log_file: Path) -> None:
@@ -51,9 +51,18 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def clean_replica(replica: Path) -> None:
-    shutil.rmtree(replica)
-    os.makedirs(replica)
+def hash_file(path: Path) -> str:
+    h = hashlib.md5()
+    with path.open("rb") as f:
+        while data := f.read(BUFF_SIZE):
+            h.update(data)
+    return h.hexdigest()
+
+
+def files_dif(src: Path, dst: Path) -> bool:
+    if hash_file(src) != hash_file(dst):
+        return True
+    return False
 
 
 def validate_dirs(src: Path, replica: Path) -> None:
@@ -63,6 +72,15 @@ def validate_dirs(src: Path, replica: Path) -> None:
         raise Exception("Source and replica can't be the same directory")
     if src.is_relative_to(replica) or replica.is_relative_to(src):
         raise Exception("Directories can't nested in each other")
+
+
+def remove(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path, True)
+        logger.info(f"Directory at '{path}' was deleted")
+    else:
+        path.unlink()
+        logger.info(f"File at '{path}' was deleted")
 
 
 def get_kind(file: Path) -> FileKind:
@@ -81,27 +99,46 @@ def sync_files(src: Path, dst: Path) -> None:
     src_names = {p.name for p in src.iterdir()}
 
     for dst_entry in dst.iterdir():
-        if not dst_entry.name in src_names:
+        if dst_entry.name not in src_names:
             try:
                 remove(dst_entry)
             except Exception as e:
                 logger.error(str(e))
     for name in sorted(src_names):
-        s = FileEntry(src / name, get_kind(src / name))
-        d = FileEntry(dst / name, get_kind(dst / name) if (dst /
-                      name).exists() or (dst / name).is_symlink() else FileKind.NONE)
+        try:
+            s = FileEntry(src / name, get_kind(src / name))
+            d = FileEntry(dst / name, get_kind(dst / name) if (dst /
+                          name).exists() or (dst / name).is_symlink() else None)
 
-        if d.kind is not None and d.kind != s.kind:
-            remove(d.path)
-            d.kind = FileKind.NONE
-            logger.info(f"'Mismatch in types' removed file {d.path}")
+            if d.kind is not None and d.kind != s.kind:
+                remove(d.path)
+                d.kind = None
 
-        if s.kind == FileKind.DIR:
-            if d.kind == FileKind.NONE:
-                d.path.mkdir()
-                logger.info(f"Create directory at {d.path}")
-            sync_files(s.path, d.path)
-        elif s.kind == FileKind.FILE:
+            if s.kind == FileKind.DIR:
+                if d.kind is None:
+                    d.path.mkdir()
+                    logger.info(f"Created directory at {d.path}")
+                sync_files(s.path, d.path)
+            elif s.kind == FileKind.FILE:
+                if d.kind is None:
+                    shutil.copy2(s.path, d.path)
+                    logger.info(f"File created: {d.path}")
+                elif files_dif(s.path, d.path):
+                    shutil.copy2(s.path, d.path)
+                    logger.info(f"File updated: {d.path}")
+
+            elif s.kind == FileKind.LINK:
+                target = os.readlink(s.path)
+                if d.kind is None or os.readlink(d.path) != target:
+                    if d.kind is not None:
+                        d.path.unlink()
+                    os.symlink(target, d.path)
+                    logger.info(f"Created symlink '{d.path}' to '{target}'")
+            else:
+                raise TypeError(
+                    "This syncer doesn't support this type of file")
+        except Exception as e:
+            logger.error(str(e))
 
 
 def start_sync(source: Path, replica: Path, sync_amount: int, interval: int) -> None:

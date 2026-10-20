@@ -1,0 +1,4 @@
+.mypy_cache
+/replica
+/src
+logs.log

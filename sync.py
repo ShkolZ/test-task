@@ -38,14 +38,14 @@ def setup_logger(log_file: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Syncer")
-    parser.add_argument("source", type=str, help="Path to source folder")
-    parser.add_argument("replica", type=str,
+    parser.add_argument("source", type=Path, help="Path to source folder")
+    parser.add_argument("replica", type=Path,
                         help="Path to replica folder")
     parser.add_argument("interval", type=int,
                         help="Interval between synchronizations(seconds)")
     parser.add_argument("sync_amount", type=int,
                         help="Amount of synchronizations")
-    parser.add_argument("log", type=str, help="Path to log file")
+    parser.add_argument("log", type=Path, help="Path to log file")
     args = parser.parse_args()
 
     return args
@@ -144,11 +144,13 @@ def sync_files(src: Path, dst: Path) -> None:
 def start_sync(source: Path, replica: Path, sync_amount: int, interval: int) -> None:
     for i in range(sync_amount):
         try:
+            logger.info(f"Sync {i + 1}")
             sync_files(source, replica)
         except Exception as e:
             logger.error(str(e))
         if not i == sync_amount - 1:
             time.sleep(interval)
+    logger.info("Finished syncing...")
 
 
 def main():
